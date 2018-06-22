@@ -51,6 +51,7 @@
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_ethdev.h>
+#include <rte_bus_pci.h>
 #include <rte_ring.h>
 #include <rte_log.h>
 #include <rte_mempool.h>
@@ -110,7 +111,9 @@ static const struct rte_eth_conf port_conf = {
 		.rss_conf = {
 			.rss_key = rss_seed,				/* Set the seed,					*/
 			.rss_key_len = 40,				/* and the seed length.					*/
-			.rss_hf = (ETH_RSS_IPV4_TCP | ETH_RSS_UDP) ,	/* Set the mask of protocols RSS will be applied to 	*/
+			//.rss_hf = (ETH_RSS_IPV4_TCP | ETH_RSS_UDP) ,	/* Set the mask of protocols RSS will be applied to 	*/
+            //@ssw dpdk-17.02
+			.rss_hf = (ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_UDP) ,	/* Set the mask of protocols RSS will be applied to 	*/
 		}	
 	}
 };
