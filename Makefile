@@ -8,6 +8,7 @@ RTE_TARGET ?= x86_64-native-linuxapp-gcc
 include $(RTE_SDK)/mk/rte.vars.mk
 
 LDLIBS = -lpcap -lpthread -lm
+LDLIBS += -lrte_pmd_e1000 -lrte_pmd_i40e -lrte_pmd_ixgbe
 #LDFLAGS = -Wl,--rpath -Wl,/usr/local/lib
 
 # binary name
