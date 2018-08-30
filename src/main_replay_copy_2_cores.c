@@ -36,6 +36,7 @@ int times = 1;
 int64_t time_out = 0;
 uint64_t buffer_size = 1048576;
 uint64_t max_pkt = 0;
+uint64_t replay_loop = 0;
 uint64_t max=0, avg=0, nb=0;
 int do_shutdown = 0;
 int sum_value = 0;
@@ -144,11 +145,21 @@ static int main_loop_producer(__attribute__((unused)) void * arg){
 		ret = pcap_next_ex(pt, &h, (const u_char**)&pkt);
 		end_time = rte_get_tsc_cycles();
 		if(ret <= 0) {
-			if (ret==-2)
-				printf("All the file replayed...\n");
-			if (ret==-1)
-				printf("Error in pcap: %s\n", pcap_geterr(pt));
-			break;
+            if(replay_loop>0){
+                pt = pcap_open_offline(file_name, ebuf);
+	            if (pt == NULL){	
+		            printf("Unable to open file: %s\n", file_name);
+                    exit(1);
+                }
+                replay_loop-=1;
+                continue;
+            }else{
+            	if (ret==-2)
+			    	printf("All the file replayed...\n");
+		    	if (ret==-1)
+			    	printf("Error in pcap: %s\n", pcap_geterr(pt));
+			    break;    
+            }
 		}
 
 		/* Alloc the buffer */
@@ -436,7 +447,7 @@ static int parse_args(int argc, char **argv)
 	
 
 	/* Retrive arguments */
-	while ((option = getopt(argc, argv,"f:s:r:B:C:t:T:")) != -1) {
+	while ((option = getopt(argc, argv,"f:s:r:B:C:t:T:L:")) != -1) {
         	switch (option) {
              		case 'f' : file_name = strdup(optarg); /* File name, mandatory */
                  		break;
@@ -451,6 +462,8 @@ static int parse_args(int argc, char **argv)
 			case 'T': time_out = atol (optarg); /* Timeout of the replay in seconds. Quit after it is reached */
 				break;
 			case 'C': max_pkt = atof (optarg); /* Max packets before quitting */
+                break;      
+            case 'L': replay_loop = atoi (optarg);/* Loops to replay one file */          
 				break;
              		default: return -1; 
 		}
