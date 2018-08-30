@@ -31,7 +31,8 @@
 
 /* Global vars */
 char * file_name = NULL;
-pcap_t *pt;
+char * file_array[8];
+pcap_t * pt[8];
 int times = 1;
 int64_t time_out = 0;
 uint64_t buffer_size = 1048576;
@@ -79,11 +80,15 @@ int main(int argc, char **argv)
 
 	/* Check if this application can use 1 core*/
 	ret = rte_lcore_count ();
-	if (ret != 2) FATAL_ERROR("This application needs exactly 2 cores.");
+	//if (ret != 2) FATAL_ERROR("This application needs exactly 2 cores.");
 
 	/* Parse arguments */
 	parse_args(argc, argv);
 	if (ret < 0) FATAL_ERROR("Wrong arguments\n");
+    
+    //@ssw
+    file_array[2] = "/data/sunshangwei/hds_test3.pcap";
+    file_array[4] = "/data/sunshangwei/http_00058_20150119155550.cap";
 
 	/* Probe PCI bus for ethernet devices, mandatory only in DPDK < 1.8.0 */
 	#if RTE_VER_MAJOR == 1 && RTE_VER_MINOR < 8
@@ -126,13 +131,16 @@ static int main_loop_producer(__attribute__((unused)) void * arg){
 	void * pkt;
 	uint64_t time, interval, end_time;
 	int ret;
-
+    int lcore_id = rte_lcore_id();
+    int loop = replay_loop;
+    pcap_t * pt_lcore;
+    file_name = file_array[lcore_id];
 	/* Open the trace */
 	printf("Opening file: %s\n", file_name);
 	printf("Replay on %d interface(s)\n", nb_sys_ports);
 	printf("Each packet replayed %d time(s) on each interface\n", times);
-	pt = pcap_open_offline(file_name, ebuf);
-	if (pt == NULL){	
+	pt_lcore = pcap_open_offline(file_name, ebuf);
+	if (pt_lcore == NULL){	
 		printf("Unable to open file: %s\n", file_name);
 		exit(1);			
 	}	
@@ -142,22 +150,23 @@ static int main_loop_producer(__attribute__((unused)) void * arg){
 
 		/* Read packet from trace */
 		time = rte_get_tsc_cycles();
-		ret = pcap_next_ex(pt, &h, (const u_char**)&pkt);
+		ret = pcap_next_ex(pt_lcore, &h, (const u_char**)&pkt);
 		end_time = rte_get_tsc_cycles();
 		if(ret <= 0) {
-            if(replay_loop>0){
-                pt = pcap_open_offline(file_name, ebuf);
-	            if (pt == NULL){	
+            if(loop>0){
+                pt_lcore  = pcap_open_offline(file_name, ebuf);
+	            if (pt_lcore == NULL){	
 		            printf("Unable to open file: %s\n", file_name);
                     exit(1);
                 }
-                replay_loop-=1;
+                loop-=1;
                 continue;
             }else{
+                pcap_close(pt_lcore);
             	if (ret==-2)
 			    	printf("All the file replayed...\n");
 		    	if (ret==-1)
-			    	printf("Error in pcap: %s\n", pcap_geterr(pt));
+			    	printf("Error in pcap: %s\n", pcap_geterr(pt_lcore));
 			    break;    
             }
 		}
@@ -242,6 +251,7 @@ static int main_loop_consumer(__attribute__((unused)) void * arg){
 				/* Loop untill it is not sent */
 				while ( rte_eth_tx_burst (i / times, 0, &m, 1) != 1)
 					if (unlikely(do_shutdown)) break;
+                //rte_free(&m);
 			}
 			else{
 
@@ -375,7 +385,8 @@ static void sig_handler(int signo)
 		print_stats();
 
 		/* Close the pcap file */
-		pcap_close(pt);
+		//pcap_close(pt[2]);
+		//pcap_close(pt[4]);
 		exit(0);	
 	}
 }
