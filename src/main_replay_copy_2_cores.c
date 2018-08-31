@@ -19,7 +19,7 @@
 
 /* Constants of the system */
 #define MEMPOOL_NAME "cluster_mem_pool"				// Name of the NICs' mem_pool, useless comment....
-#define MEMPOOL_ELEM_SZ 2048  					// Power of two greater than 1500
+#define MEMPOOL_ELEM_SZ  2048  					// Power of two greater than 1500
 #define MEMPOOL_CACHE_SZ 512  					// Max is 512
 
 #define BUFFER_RATIO 0.9
@@ -32,10 +32,11 @@
 /* Global vars */
 char * file_name = NULL;
 char * file_array[8];
+int file_index = 0;
 pcap_t * pt[8];
 int times = 1;
 int64_t time_out = 0;
-uint64_t buffer_size = 1048576;
+uint64_t buffer_size = 1024*2048;
 uint64_t max_pkt = 0;
 uint64_t replay_loop = 0;
 uint64_t max=0, avg=0, nb=0;
@@ -46,6 +47,7 @@ pcap_t *pd;
 int nb_sys_ports;
 static struct rte_mempool * pktmbuf_pool;
 static struct rte_ring * intermediate_ring;
+rte_spinlock_t lock;
 
 uint64_t num_pkt_good_sent = 0;
 uint64_t num_bytes_good_sent = 0;
@@ -67,6 +69,7 @@ int main(int argc, char **argv)
 {
 	int ret;
 	int i;
+	char *sub_filename;
 
 	/* Create handler for SIGINT for CTRL + C closing and SIGALRM to print stats*/
 	signal(SIGINT, sig_handler);
@@ -77,7 +80,6 @@ int main(int argc, char **argv)
 	if (ret < 0) FATAL_ERROR("Cannot init EAL\n");
 	argc -= ret;
 	argv += ret;
-
 	/* Check if this application can use 1 core*/
 	ret = rte_lcore_count ();
 	//if (ret != 2) FATAL_ERROR("This application needs exactly 2 cores.");
@@ -85,10 +87,10 @@ int main(int argc, char **argv)
 	/* Parse arguments */
 	parse_args(argc, argv);
 	if (ret < 0) FATAL_ERROR("Wrong arguments\n");
-    
+	rte_spinlock_init(&lock);
     //@ssw
-    file_array[2] = "/data/sunshangwei/hds_test3.pcap";
-    file_array[4] = "/data/sunshangwei/http_00058_20150119155550.cap";
+    // file_array[2] = "/data/sunshangwei/hds_test3.pcap";
+    // file_array[4] = "/data/sunshangwei/http_00058_20150119155550.cap";
 
 	/* Probe PCI bus for ethernet devices, mandatory only in DPDK < 1.8.0 */
 	#if RTE_VER_MAJOR == 1 && RTE_VER_MINOR < 8
@@ -112,6 +114,14 @@ int main(int argc, char **argv)
 	/* Operations needed for each ethernet device */			
 	for(i=0; i < nb_sys_ports; i++)
 		init_port(i);
+	char* token = strtok(file_name,"%");
+	i = 0;
+	while(token != NULL)
+	{
+        file_array[i]=token;
+        i++;
+		token = strtok(NULL,"%");
+	}
 
 	/* Start consumer and producer routine on 2 different cores: producer launched first... */
 	ret =  rte_eal_mp_remote_launch (main_loop_producer, NULL, SKIP_MASTER);
@@ -125,23 +135,29 @@ int main(int argc, char **argv)
 
 static int main_loop_producer(__attribute__((unused)) void * arg){
 
+    char * file_lcore = NULL;
 	struct rte_mbuf * m;
 	char ebuf[256];
 	struct pcap_pkthdr *h;
 	void * pkt;
 	uint64_t time, interval, end_time;
 	int ret;
-    int lcore_id = rte_lcore_id();
     int loop = replay_loop;
     pcap_t * pt_lcore;
-    file_name = file_array[lcore_id];
+	int index_lcore;
+	/*open one file in a lcore*/
+	rte_spinlock_lock(&lock);
+	index_lcore = file_index;
+    file_lcore = file_array[file_index++];
+	rte_spinlock_unlock(&lock);
 	/* Open the trace */
-	printf("Opening file: %s\n", file_name);
+	printf("Opening file: %s\n", file_lcore);
 	printf("Replay on %d interface(s)\n", nb_sys_ports);
 	printf("Each packet replayed %d time(s) on each interface\n", times);
-	pt_lcore = pcap_open_offline(file_name, ebuf);
+	pt_lcore = pcap_open_offline(file_lcore, ebuf);
+	pt[index_lcore] = pt_lcore;
 	if (pt_lcore == NULL){	
-		printf("Unable to open file: %s\n", file_name);
+		printf("Unable to open file: %s\n", file_lcore);
 		exit(1);			
 	}	
 
@@ -154,26 +170,29 @@ static int main_loop_producer(__attribute__((unused)) void * arg){
 		end_time = rte_get_tsc_cycles();
 		if(ret <= 0) {
             if(loop>0){
-                pt_lcore  = pcap_open_offline(file_name, ebuf);
-	            if (pt_lcore == NULL){	
-		            printf("Unable to open file: %s\n", file_name);
+                pt_lcore  = pcap_open_offline(file_lcore, ebuf);
+				pt[index_lcore] = pt_lcore;
+                if (pt_lcore == NULL){	
+		            printf("Unable to open file: %s\n", file_lcore);
                     exit(1);
                 }
                 loop-=1;
                 continue;
             }else{
-                pcap_close(pt_lcore);
             	if (ret==-2)
 			    	printf("All the file replayed...\n");
 		    	if (ret==-1)
 			    	printf("Error in pcap: %s\n", pcap_geterr(pt_lcore));
+				pcap_close(pt[index_lcore]);
 			    break;    
             }
 		}
 
 		/* Alloc the buffer */
+		while( !(m = rte_pktmbuf_alloc(pktmbuf_pool))) {
+			printf("rte_pktmbuf_alloc error\n");
+		}
 
-		while( (m =  rte_pktmbuf_alloc 	(pktmbuf_pool)) == NULL) {}
 
 		interval = end_time-time;
 		avg = avg + interval;
@@ -183,7 +202,9 @@ static int main_loop_producer(__attribute__((unused)) void * arg){
 
 
 		/* Not fill the buffer */
-		while (rte_mempool_free_count (pktmbuf_pool) > buffer_size*BUFFER_RATIO ) {}
+		while (rte_mempool_free_count (pktmbuf_pool) > buffer_size*BUFFER_RATIO ) {
+        }
+        
 
 		/* Compile the buffer */
 		m->data_len = m->pkt_len = h->caplen;
@@ -204,6 +225,7 @@ static int main_loop_consumer(__attribute__((unused)) void * arg){
 	struct ipv4_hdr * ip_h;
 	double mult_start = 0, mult = 0, real_rate, deltaMillisec;
 	int i, ix, ret, length;
+    int tx_num;
 	uint64_t tick_start;
 
 
@@ -230,11 +252,11 @@ static int main_loop_consumer(__attribute__((unused)) void * arg){
 
 		/* Dequeue packet */
 		ret = rte_ring_dequeue(intermediate_ring, (void**)&m);
-		
+
 		/* Continue polling if no packet available */
-		if( unlikely (ret != 0)) continue;
-	
-		length = m->data_len;
+		if( unlikely(ret!=0)) {
+            continue;
+        }
 
 		/* For each received packet. */
 		for (i = 0; likely( i < nb_sys_ports * times ) ; i++) {
@@ -251,7 +273,6 @@ static int main_loop_consumer(__attribute__((unused)) void * arg){
 				/* Loop untill it is not sent */
 				while ( rte_eth_tx_burst (i / times, 0, &m, 1) != 1)
 					if (unlikely(do_shutdown)) break;
-                //rte_free(&m);
 			}
 			else{
 
@@ -312,7 +333,6 @@ static int main_loop_consumer(__attribute__((unused)) void * arg){
 			printf("Sent %ld packets...\n", max_pkt);
 			sig_handler(SIGINT);
 		}
-
 	}
 
 	sig_handler(SIGINT);
@@ -369,6 +389,7 @@ static void sig_handler(int signo)
 	uint64_t diff;
 	int ret;
 	struct timeval t_end;
+	int i;
 
 	/* Catch just SIGINT */
 	if (signo == SIGINT){
@@ -385,8 +406,9 @@ static void sig_handler(int signo)
 		print_stats();
 
 		/* Close the pcap file */
-		//pcap_close(pt[2]);
-		//pcap_close(pt[4]);
+		for(i=0;i<file_index;i++){
+			pcap_close(pt[i]);
+		}
 		exit(0);	
 	}
 }
